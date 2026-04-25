@@ -1,0 +1,5 @@
+loguru
+pandas
+pandas_ta
+smartmoneyconcepts
+MetaTrader5
