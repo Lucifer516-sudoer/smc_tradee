@@ -3,3 +3,9 @@ pandas
 pandas_ta
 smartmoneyconcepts
 MetaTrader5
+fastapi
+uvicorn
+streamlit
+matplotlib
+requests
+python-multipart
