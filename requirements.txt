@@ -1,11 +1,11 @@
-loguru
 pandas
 pandas_ta
 smartmoneyconcepts
-MetaTrader5
+git+https://github.com/Lucifer516-sudoer/metatrader5_wrapper
 fastapi
 uvicorn
 streamlit
+streamlit-extras
 matplotlib
 requests
 python-multipart

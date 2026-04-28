@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 
-from loguru import logger
-
 from .config import BotConfig
-from .mt5_gateway import MT5Gateway, PendingOrderRequest, mt5_timeframe_from_name, round_to_digits
+from .mt5_gateway import (
+    MT5Gateway,
+    PendingOrderRequest,
+    mt5_timeframe_from_name,
+    round_to_digits,
+)
 from .news_filter import EconomicCalendarFilter, utc_now
 from .strategy import Signal, ZeroFadeStrategy
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,7 +44,7 @@ class ZeroFadeBot:
             )
 
     def _submit_signal(self, signal: Signal) -> None:
-        digits: int = 3 if signal.symbol.endswith("JPY") else 5
+        digits: int = self.gateway.get_symbol_digits(signal.symbol)
         request = PendingOrderRequest(
             symbol=signal.symbol,
             is_buy_limit=signal.side == "buy_limit",
@@ -47,8 +54,22 @@ class ZeroFadeBot:
             tp=round_to_digits(signal.tp, digits),
             comment="ZeroFade_Auto",
         )
-        self.gateway.place_pending_order(req=request)
-        logger.info(f"Submitted {signal.side} for {signal.symbol}. {signal.context_note}")
+        try:
+            result = self.gateway.place_pending_order(req=request)
+        except (RuntimeError, ValueError) as exc:
+            logger.warning(
+                f"Rejected local {signal.side} for {signal.symbol}: {exc}. {signal.context_note}"
+            )
+            return
+        if result.accepted:
+            logger.info(
+                f"Submitted {signal.side} for {signal.symbol}. {signal.context_note}"
+            )
+        else:
+            logger.warning(
+                f"Broker rejected {signal.side} for {signal.symbol}: "
+                f"{result.retcode_name} ({result.retcode}); comment={result.comment!r}. {signal.context_note}"
+            )
 
     def _scan_symbol(self, symbol: str) -> None:
         if self.calendar_filter.is_news_blackout(symbol=symbol, now_utc=utc_now()):
@@ -58,7 +79,11 @@ class ZeroFadeBot:
             return
 
         timeframe: int = mt5_timeframe_from_name(self.config.strategy.timeframe_name)
-        rates = self.gateway.get_rates(symbol=symbol, timeframe=timeframe, bars=self.config.strategy.bars_for_context)
+        rates = self.gateway.get_rates(
+            symbol=symbol,
+            timeframe=timeframe,
+            bars=self.config.strategy.bars_for_context,
+        )
         signal = self.strategy.generate_signal(symbol=symbol, rates=rates)
 
         if signal is None:

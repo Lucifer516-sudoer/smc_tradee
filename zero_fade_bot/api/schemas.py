@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -26,3 +29,10 @@ class BacktestRequest(BaseModel):
     spread_pips: float = 1.2
     slippage_pips: float = 0.5
     execution_delay_bars: int = 1
+    # Date range for backtest (optional)
+    start_date: Optional[datetime] = Field(
+        None, description="Start date for backtest (UTC)"
+    )
+    end_date: Optional[datetime] = Field(
+        None, description="End date for backtest (UTC)"
+    )

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from .config import BacktestConfig
 from .models import Bar, ClosedTrade, FillEvent, Position, Side
 from .strategy import BacktestStrategy
+from ..symbols import pip_size
 
 
 @dataclass
@@ -26,12 +27,12 @@ class BacktestEngine:
         self.strategy = strategy
 
     def _pip_size(self) -> float:
-        return 0.01 if self.config.symbol.endswith("JPY") else 0.0001
+        return pip_size(self.config.symbol)
 
     def _pip_value_for_lot(self) -> float:
         return self.config.risk.pip_value_per_lot * self.config.risk.lot_size
 
-    def run(self, bars: list[Bar]) -> BacktestResult:
+    def run(self, bars: list[Bar], progress_callback=None) -> BacktestResult:
         balance = self.config.risk.initial_balance
         equity_curve: list[float] = [balance]
         peak = balance
@@ -43,16 +44,50 @@ class BacktestEngine:
         pip_size = self._pip_size()
         pip_value = self._pip_value_for_lot()
 
+        total_bars = len(bars)
+        report_interval = max(1, total_bars // 20)  # Report every 5%
+
         for idx, bar in enumerate(bars):
             signal = self.strategy.on_bar(bars, idx)
             if signal is not None and open_position is None:
-                delayed_signals.append((idx + self.config.execution.execution_delay_bars, signal.side, signal.stop_loss_pips, signal.take_profit_pips))
+                delayed_signals.append(
+                    (
+                        idx + self.config.execution.execution_delay_bars,
+                        signal.side,
+                        signal.stop_loss_pips,
+                        signal.take_profit_pips,
+                    )
+                )
 
-            if delayed_signals and delayed_signals[0][0] <= idx and open_position is None:
+            if (
+                delayed_signals
+                and delayed_signals[0][0] <= idx
+                and open_position is None
+            ):
                 _, side, sl_pips, tp_pips = delayed_signals.popleft()
                 fill = self._fill_from_bar(bar=bar, side=side)
-                sl_price = fill.price - sl_pips * pip_size if side == Side.BUY else fill.price + sl_pips * pip_size
-                tp_price = fill.price + tp_pips * pip_size if side == Side.BUY else fill.price - tp_pips * pip_size
+                sl_price = (
+                    fill.price - sl_pips * pip_size
+                    if side == Side.BUY
+                    else fill.price + sl_pips * pip_size
+                )
+                tp_price = (
+                    fill.price + tp_pips * pip_size
+                    if side == Side.BUY
+                    else fill.price - tp_pips * pip_size
+                )
+
+                # Calculate partial TP level (1R profit)
+                partial_tp_price = (
+                    fill.price + (sl_pips * pip_size)
+                    if side == Side.BUY
+                    else fill.price - (sl_pips * pip_size)
+                )
+
+                # Check if strategy uses partial TP
+                use_partial = getattr(self.strategy, "use_partial_tp", False)
+                partial_rr = getattr(self.strategy, "partial_tp_rr", 1.0)
+
                 open_position = Position(
                     side=side,
                     entry_time=bar.time,
@@ -60,10 +95,15 @@ class BacktestEngine:
                     stop_loss=sl_price,
                     take_profit=tp_price,
                     lot_size=self.config.risk.lot_size,
+                    use_partial_tp=use_partial,
+                    partial_tp_price=partial_tp_price,
+                    partial_tp_rr=partial_rr,
                 )
 
             if open_position is not None:
-                closed_trade = self._try_close(bar=bar, pos=open_position, pip_size=pip_size, pip_value=pip_value)
+                closed_trade = self._try_close(
+                    bar=bar, pos=open_position, pip_size=pip_size, pip_value=pip_value
+                )
                 if closed_trade is not None:
                     trades.append(closed_trade)
                     balance += closed_trade.pnl
@@ -73,6 +113,10 @@ class BacktestEngine:
             peak = max(peak, balance)
             dd = ((peak - balance) / peak) * 100 if peak > 0 else 0.0
             max_dd = max(max_dd, dd)
+
+            # Report progress every 5%
+            if progress_callback and idx % report_interval == 0:
+                progress_callback(idx / total_bars * 100)
 
         wins = [t for t in trades if t.pnl > 0]
         avg_rr = sum(t.rr for t in trades) / len(trades) if trades else 0.0
@@ -95,15 +139,37 @@ class BacktestEngine:
             price = bar.open + spread + slippage
         else:
             price = bar.open - spread - slippage
-        return FillEvent(time=bar.time, price=price, slippage_pips=self.config.execution.slippage_pips, spread_pips=self.config.execution.spread_pips)
+        return FillEvent(
+            time=bar.time,
+            price=price,
+            slippage_pips=self.config.execution.slippage_pips,
+            spread_pips=self.config.execution.spread_pips,
+        )
 
-    def _try_close(self, bar: Bar, pos: Position, pip_size: float, pip_value: float) -> ClosedTrade | None:
+    def _try_close(
+        self, bar: Bar, pos: Position, pip_size: float, pip_value: float
+    ) -> ClosedTrade | None:
+        """Check for partial TP or full close conditions."""
         if pos.side == Side.BUY:
+            hit_partial = (
+                not pos.partial_tp_triggered and bar.high >= pos.partial_tp_price
+            )
             hit_sl = bar.low <= pos.stop_loss
             hit_tp = bar.high >= pos.take_profit
         else:
+            hit_partial = (
+                not pos.partial_tp_triggered and bar.low <= pos.partial_tp_price
+            )
             hit_sl = bar.high >= pos.stop_loss
             hit_tp = bar.low <= pos.take_profit
+
+        # Handle partial TP
+        if pos.use_partial_tp and hit_partial and not pos.partial_tp_triggered:
+            # Close 50% at partial TP (simulated - in real trading would manage position)
+            pos.partial_tp_triggered = True
+            # Move SL to breakeven after partial TP
+            pos.stop_loss = pos.entry_price
+            return None  # Continue holding position
 
         if not hit_sl and not hit_tp:
             return None

@@ -1,10 +1,15 @@
 from __future__ import annotations
-
 from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
-from zero_fade_bot.backtest import BacktestConfig, BacktestService, ExecutionConfig, RiskConfig
+from zero_fade_bot.backtest import (
+    BacktestConfig,
+    BacktestService,
+    ExecutionConfig,
+    RiskConfig,
+)
 
 from .controller import BotController
 from .schemas import BacktestRequest, BotStatusResponse, StartBotRequest
@@ -46,27 +51,45 @@ def bot_stop() -> dict[str, str]:
 
 
 @app.post("/backtest/run")
-async def run_backtest(config: BacktestRequest, csv_file: UploadFile = File(...)) -> dict:
+async def run_backtest(
+    config: str = Form(...),
+    csv_file: UploadFile = File(...),
+) -> dict[str, Any]:
+    try:
+        parsed_config = BacktestRequest.model_validate_json(config)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail=f"Invalid backtest config: {exc}"
+        ) from exc
+
+    filename = csv_file.filename
+    if not filename:
+        raise HTTPException(
+            status_code=400, detail="Uploaded CSV file must have a filename"
+        )
+
     tmp_dir = Path("tmp")
     tmp_dir.mkdir(exist_ok=True)
-    target = tmp_dir / csv_file.filename
+    target = tmp_dir / filename
     content = await csv_file.read()
     target.write_bytes(content)
 
     result = backtest_service.run_zero_fade(
         csv_path=target,
         config=BacktestConfig(
-            symbol=config.symbol,
+            symbol=parsed_config.symbol,
             execution=ExecutionConfig(
-                spread_pips=config.spread_pips,
-                slippage_pips=config.slippage_pips,
-                execution_delay_bars=config.execution_delay_bars,
+                spread_pips=parsed_config.spread_pips,
+                slippage_pips=parsed_config.slippage_pips,
+                execution_delay_bars=parsed_config.execution_delay_bars,
             ),
             risk=RiskConfig(
-                initial_balance=config.initial_balance,
-                lot_size=config.lot_size,
-                risk_percent_per_trade=config.risk_percent_per_trade,
+                initial_balance=parsed_config.initial_balance,
+                lot_size=parsed_config.lot_size,
+                risk_percent_per_trade=parsed_config.risk_percent_per_trade,
             ),
         ),
+        start_date=parsed_config.start_date,
+        end_date=parsed_config.end_date,
     )
     return result

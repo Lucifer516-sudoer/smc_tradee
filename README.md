@@ -46,8 +46,8 @@ zero_fade_bot/
     app.py              # Streamlit monitoring/control/backtesting interface
   bot.py                # Live runtime loop and kill-switch orchestration
   strategy.py           # Live signal generation (MT5 runtime)
-  mt5_gateway.py        # MT5 integration adapter
-  logging_setup.py      # loguru setup (console + rotating file)
+  mt5_gateway.py        # MT5 wrapper integration adapter
+  logging_setup.py      # standard logging setup (console + file)
   news_filter.py        # News blackout extension point
 main.py                 # Live runtime entrypoint
 ```
@@ -124,8 +124,12 @@ streamlit run zero_fade_bot/dashboard/app.py
 export MT5_LOGIN=12345678
 export MT5_PASSWORD='your-password'
 export MT5_SERVER='YourBroker-Demo'
+export LOG_LEVEL=INFO
+export LOG_FILE_PATH='logs/bot.log'
 python main.py
 ```
+
+The live bot writes logs to `logs/bot.log` and console using the format `[TIME] [LEVEL] [MODULE] message`.
 
 ---
 
